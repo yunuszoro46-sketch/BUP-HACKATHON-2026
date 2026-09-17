@@ -8,7 +8,7 @@ This repository contains the source code developed during the online preliminary
 
 ## 📌 Event Details
 
-* **Event Name:** Ha<kathon>
+* **Event Name:**bup cse fest Hackathon 2026
 * **Partner:** Paridhi.io
 * **Online Preliminary:** September 18 | 7:00 PM – 11:00 PM (BDT)
 * **Format:** Intensive competition to design and build functional tech solutions addressing real-world challenges.
