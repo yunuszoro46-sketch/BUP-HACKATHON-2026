@@ -8,7 +8,7 @@ A collection of writeups, analysis, and solution scripts for recent CTF and fore
 
 ### 1. [Challenge Name / Title](#) <!-- Replace # with the link to the problem or file -->
 - **Category:** Forensics / SVG Analysis / Steganography
-- **Problem Link / File:** [`challenge_1.svg`](./challenge-1/challenge_1.svg) <!-- Or external link e.g. https://ctf.example.com/challenges/1 -->
+- **Problem Link / File:** [`challenge_1.svg`] https://learn.cylabacademy.org/learning-paths/16/115    <!-- Or external link e.g. https://ctf.example.com/challenges/1 -->
 - **Difficulty:** Easy–Medium
 
 #### 📋 Challenge Description
