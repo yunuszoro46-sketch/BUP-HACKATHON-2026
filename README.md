@@ -1,4 +1,4 @@
-# Ha<kathon> Project — In Association with Paridhi.io
+# Hackathon Project — In Association with Paridhi.io
 
 > **High Energy. Rapid Build. Real-World Solutions.**
 
