@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GridWise | Smart Campus Energy</title>
+  <style>
+    :root { --bg:#07111f; --panel:#0d1d31; --muted:#91a4bb; --text:#eef6ff; --cyan:#38d9c5; --blue:#5c8dff; --line:#203650; --warn:#ffcc66; }
+    * { box-sizing:border-box; } body { margin:0; color:var(--text); background:radial-gradient(circle at 80% 0,#123052 0,#07111f 48%); font:15px/1.5 Inter,system-ui,sans-serif; }
+    main { max-width:1280px; margin:auto; padding:28px 20px 56px; } h1,h2,h3,p { margin-top:0; } h1 { font-size:clamp(2rem,5vw,4rem); line-height:1; margin-bottom:12px; } h2 { margin-bottom:16px; } .eyebrow { color:var(--cyan); letter-spacing:.14em; text-transform:uppercase; font-size:12px; font-weight:800; } .subtitle { color:var(--muted); max-width:680px; font-size:17px; }
+    .panel,.metric { background:rgba(13,29,49,.9); border:1px solid var(--line); border-radius:18px; padding:20px; box-shadow:0 15px 45px #0003; } .panel { margin-top:20px; } .grid { display:grid; gap:16px; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); } label { color:var(--muted); font-size:12px; font-weight:700; display:block; } input,textarea,button { width:100%; border:1px solid var(--line); border-radius:10px; padding:11px 12px; margin-top:6px; background:#081625; color:var(--text); font:inherit; } textarea { resize:vertical; min-height:92px; } button { background:linear-gradient(135deg,var(--blue),#765cf6); border:0; cursor:pointer; font-weight:800; padding:13px; } button.secondary { background:#17304d; } button:disabled { opacity:.6; cursor:wait; }
+    .metrics { display:grid; gap:14px; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); margin-top:20px; } .metric small { color:var(--muted); display:block; } .metric strong { font-size:27px; display:block; margin-top:4px; } .status { margin-top:12px; min-height:24px; color:var(--muted); } .status.ok { color:var(--cyan); } .status.error { color:#ff8e8e; }
+    .table-wrap { overflow:auto; } table { width:100%; border-collapse:collapse; min-width:720px; } th,td { padding:10px 8px; border-bottom:1px solid var(--line); text-align:left; white-space:nowrap; } th { color:var(--muted); font-size:12px; text-transform:uppercase; } .tag { border-radius:99px; padding:3px 8px; font-size:12px; background:#17304d; } .tag.charge { color:#80b4ff; } .tag.discharge { color:var(--cyan); } .tag.idle { color:var(--muted); }
+    .bars { height:220px; display:flex; align-items:end; gap:4px; padding:22px 0 28px; border-bottom:1px solid var(--line); } .bar { flex:1; min-width:5px; background:linear-gradient(#38d9c5,#2468b7); border-radius:5px 5px 0 0; position:relative; } .bar span { position:absolute; bottom:-25px; left:50%; transform:translateX(-50%); color:var(--muted); font-size:10px; } .interpretation { border-left:3px solid var(--cyan); padding:8px 12px; margin:10px 0; background:#0a1828; } .interpretation em { color:var(--muted); }
+  </style>
+</head>
+<body><main>
+  <p class="eyebrow">BUP CSE Fest 2026 · Live demo</p>
+  <h1>GridWise</h1>
+  <p class="subtitle">Turn operator notes into a safe, cost-aware 24-hour campus energy schedule using solar, battery storage and the grid.</p>
+
+  <section class="panel"><h2>Scenario controls</h2><div class="grid">
+    <div><label for="scenario">Scenario ID</label><input id="scenario" value="JUDGE-DEMO-001"></div>
+    <div><label for="capacity">Battery capacity (kWh)</label><input id="capacity" type="number" value="500" min="1"></div>
+    <div><label for="initial">Initial energy (kWh)</label><input id="initial" type="number" value="200" min="0"></div>
+    <div><label for="reserve">Minimum reserve (kWh)</label><input id="reserve" type="number" value="50" min="0"></div>
+    <div><label for="charge">Max charge / hour</label><input id="charge" type="number" value="100" min="0"></div>
+    <div><label for="discharge">Max discharge / hour</label><input id="discharge" type="number" value="100" min="0"></div>
+  </div></section>
+
+  <section class="panel"><h2>Operator notes</h2><p style="color:var(--muted)">Enter one to three instructions. Each line becomes a note for the LLM/local fallback interpreter.</p><textarea id="notes">Reduce solar by 80% between 1 PM and 3 PM.
+Do not charge battery from 2 PM to 4 PM.</textarea><div class="grid" style="margin-top:14px"><button class="secondary" id="sample">Reset sample data</button><button id="run">Optimize 24-hour plan</button></div><div class="status" id="status"></div></section>
+
+  <section class="panel"><h2>Optimization result</h2><div class="metrics"><div class="metric"><small>Total grid energy</small><strong id="totalGrid">—</strong><small>kWh</small></div><div class="metric"><small>Total cost</small><strong id="totalCost">—</strong><small>BDT</small></div><div class="metric"><small>Peak grid draw</small><strong id="peakGrid">—</strong><small>kWh / hour</small></div></div><div class="bars" id="chart"></div></section>
+
+  <section class="panel"><h2>What the system understood</h2><div id="interpretations"><p style="color:var(--muted)">Run an optimization to see the guarded directives.</p></div></section>
+  <section class="panel"><h2>Hourly dispatch plan</h2><div class="table-wrap"><table><thead><tr><th>Hour</th><th>Grid</th><th>Solar used</th><th>Battery</th><th>Battery kWh</th><th>Energy after</th></tr></thead><tbody id="plan"></tbody></table></div></section>
+</main>
+<script>
+  const $ = id => document.getElementById(id);
+  function payload() { return { scenario_id:$('scenario').value.trim() || 'DEMO', operator_notes:$('notes').value.split('\n').map(x=>x.trim()).filter(Boolean), hours:Array.from({length:24},(_,hour)=>({hour,demand_kwh:100,solar_kwh:hour>=8&&hour<=16?100:0,tariff_bdt_per_kwh:hour>=18&&hour<=20?10:5})), battery:{capacity_kwh:+$('capacity').value,initial_energy_kwh:+$('initial').value,minimum_energy_kwh:+$('reserve').value,max_charge_kwh_per_hour:+$('charge').value,max_discharge_kwh_per_hour:+$('discharge').value} }; }
+  function render(data) { $('totalGrid').textContent=data.total_grid_kwh.toFixed(2); $('totalCost').textContent=data.total_cost_bdt.toFixed(2); $('peakGrid').textContent=data.peak_grid_kwh.toFixed(2); const max=Math.max(...data.hourly_plan.map(x=>x.grid_kwh),1); $('chart').innerHTML=data.hourly_plan.map(x=>`<div class="bar" title="Hour ${x.hour}: ${x.grid_kwh} kWh" style="height:${Math.max(2,x.grid_kwh/max*100)}%"><span>${x.hour}</span></div>`).join(''); $('plan').innerHTML=data.hourly_plan.map(x=>`<tr><td>${x.hour}:00</td><td>${x.grid_kwh.toFixed(2)}</td><td>${x.solar_used_kwh.toFixed(2)}</td><td><span class="tag ${x.battery_action}">${x.battery_action}</span></td><td>${x.battery_kwh.toFixed(2)}</td><td>${x.battery_energy_after_kwh.toFixed(2)}</td></tr>`).join(''); $('interpretations').innerHTML=data.directive_interpretation.map(x=>`<div class="interpretation"><strong>Note ${x.note_index+1}: ${x.directive_type}</strong> · ${x.applies?'applied':'ignored'}<br><em>${x.explanation}</em></div>`).join(''); }
+  $('sample').onclick=()=>{ $('notes').value='Reduce solar by 80% between 1 PM and 3 PM.\nDo not charge battery from 2 PM to 4 PM.'; $('status').textContent='Sample scenario restored.'; };
+  $('run').onclick=async()=>{ const button=$('run'); button.disabled=true; $('status').className='status'; $('status').textContent='Interpreting notes and solving the schedule…'; try { const res=await fetch('/optimize-energy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload())}); const data=await res.json(); if(!res.ok) throw new Error(data.detail||'Request failed'); render(data); $('status').className='status ok'; $('status').textContent=data.plan_summary; } catch(err) { $('status').className='status error'; $('status').textContent='Could not optimize: '+err.message; } finally { button.disabled=false; } };
+</script></body></html>
