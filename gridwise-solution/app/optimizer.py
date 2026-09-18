@@ -1,110 +1,141 @@
-from typing import List, Dict, Any, Tuple
+from typing import Any, Dict, List, Optional, Tuple
+
 import pulp
-from app.schemas import HourEntry, BatteryConfig, HourlyPlanEntry
+
+from app.schemas import BatteryConfig, HourEntry, HourlyPlanEntry
+
+
+def build_effective_constraints(
+    hours: List[HourEntry],
+    battery: BatteryConfig,
+    directives: List[Dict[str, Any]],
+) -> Tuple[
+    List[HourEntry],
+    Dict[int, float],
+    Dict[int, float],
+    Dict[int, Optional[float]],
+    set[int],
+    set[int],
+]:
+    """Normalize input order and derive the constraints used by solve/replay."""
+    ordered = sorted(hours, key=lambda entry: entry.hour)
+    solar = {hour: entry.solar_kwh for hour, entry in ((entry.hour, entry) for entry in ordered)}
+    min_soc = {hour: battery.minimum_energy_kwh for hour in range(24)}
+    max_grid: Dict[int, Optional[float]] = {hour: None for hour in range(24)}
+    no_charge: set[int] = set()
+    no_discharge: set[int] = set()
+
+    for directive in directives:
+        directive_type = directive.get("directive_type")
+        adjustment = directive.get("adjustment") or {}
+        target_hours = adjustment.get("hours", [])
+
+        if directive_type == "solar_reduction":
+            factor = max(0.0, min(1.0, float(adjustment.get("factor", 1.0))))
+            for hour in target_hours:
+                solar[hour] *= factor
+        elif directive_type == "minimum_battery_reserve":
+            reserve = max(
+                0.0,
+                min(battery.capacity_kwh, float(adjustment.get("minimum_energy_kwh", 0.0))),
+            )
+            for hour in target_hours:
+                min_soc[hour] = max(min_soc[hour], reserve)
+        elif directive_type == "no_charge_window":
+            no_charge.update(target_hours)
+        elif directive_type == "no_discharge_window":
+            no_discharge.update(target_hours)
+        elif directive_type == "max_grid_window":
+            cap = max(0.0, float(adjustment.get("max_grid_kwh", 0.0)))
+            for hour in target_hours:
+                max_grid[hour] = cap if max_grid[hour] is None else min(max_grid[hour], cap)
+
+    return ordered, solar, min_soc, max_grid, no_charge, no_discharge
 
 
 def solve_energy_optimization(
-        hours: List[HourEntry],
-        battery: BatteryConfig,
-        directives: List[Dict[str, Any]]
+    hours: List[HourEntry],
+    battery: BatteryConfig,
+    directives: List[Dict[str, Any]],
 ) -> Tuple[List[HourlyPlanEntry], float, float, float]:
-    """
-    Solves the 24-hour linear program to minimize total electricity cost.
-    """
+    """Solve the 24-hour mixed-integer cost-minimization problem."""
+    ordered, effective_solar, min_soc, max_grid, no_charge, no_discharge = build_effective_constraints(
+        hours, battery, directives
+    )
     prob = pulp.LpProblem("GridWise_Cost_Minimization", pulp.LpMinimize)
 
-    # Pre-process directive adjustments
-    solar_factors = {h: 1.0 for h in range(24)}
-    min_reserves = {h: battery.minimum_energy_kwh for h in range(24)}
-    no_charge_hours = set()
-    no_discharge_hours = set()
-    max_grid_caps = {h: float('inf') for h in range(24)}
-
-    for d in directives:
-        d_type = d.get("directive_type")
-        adj = d.get("adjustment", {})
-        target_hours = adj.get("hours", [])
-
-        if d_type == "solar_reduction":
-            factor = adj.get("factor", 1.0)
-            for h in target_hours:
-                solar_factors[h] = min(solar_factors[h], factor)
-        elif d_type == "minimum_battery_reserve":
-            min_kwh = adj.get("minimum_energy_kwh", battery.minimum_energy_kwh)
-            for h in target_hours:
-                min_reserves[h] = max(min_reserves[h], min_kwh)
-        elif d_type == "no_charge_window":
-            no_charge_hours.update(target_hours)
-        elif d_type == "no_discharge_window":
-            no_discharge_hours.update(target_hours)
-        elif d_type == "max_grid_window":
-            cap = adj.get("max_grid_kwh", float('inf'))
-            for h in target_hours:
-                max_grid_caps[h] = min(max_grid_caps[h], cap)
-
-    # Decision Variables
     grid = {}
     solar_used = {}
     charge = {}
     discharge = {}
     soc = {}
+    battery_mode = {}
 
-    for t in range(24):
-        grid[t] = pulp.LpVariable(f"grid_{t}", lowBound=0, upBound=max_grid_caps[t])
-        avail_solar = hours[t].solar_kwh * solar_factors[t]
-        solar_used[t] = pulp.LpVariable(f"solar_used_{t}", lowBound=0, upBound=avail_solar)
+    for t, entry in enumerate(ordered):
+        hour = entry.hour
+        grid[hour] = pulp.LpVariable(
+            f"grid_{hour}", lowBound=0, upBound=max_grid[hour]
+        )
+        solar_used[hour] = pulp.LpVariable(
+            f"solar_used_{hour}", lowBound=0, upBound=effective_solar[hour]
+        )
+        charge[hour] = pulp.LpVariable(
+            f"charge_{hour}", lowBound=0,
+            upBound=0.0 if hour in no_charge else battery.max_charge_kwh_per_hour,
+        )
+        discharge[hour] = pulp.LpVariable(
+            f"discharge_{hour}", lowBound=0,
+            upBound=0.0 if hour in no_discharge else battery.max_discharge_kwh_per_hour,
+        )
+        soc[hour] = pulp.LpVariable(
+            f"soc_{hour}", lowBound=min_soc[hour], upBound=battery.capacity_kwh
+        )
+        # One binary mode prevents simultaneous charging and discharging.
+        battery_mode[hour] = pulp.LpVariable(f"charge_mode_{hour}", cat="Binary")
+        prob += charge[hour] <= battery.max_charge_kwh_per_hour * battery_mode[hour]
+        prob += discharge[hour] <= battery.max_discharge_kwh_per_hour * (1 - battery_mode[hour])
 
-        c_max = 0.0 if t in no_charge_hours else battery.max_charge_kwh_per_hour
-        d_max = 0.0 if t in no_discharge_hours else battery.max_discharge_kwh_per_hour
+    prob += pulp.lpSum(grid[entry.hour] * entry.tariff_bdt_per_kwh for entry in ordered)
 
-        charge[t] = pulp.LpVariable(f"charge_{t}", lowBound=0, upBound=c_max)
-        discharge[t] = pulp.LpVariable(f"discharge_{t}", lowBound=0, upBound=d_max)
-        soc[t] = pulp.LpVariable(f"soc_{t}", lowBound=min_reserves[t], upBound=battery.capacity_kwh)
+    for index, entry in enumerate(ordered):
+        hour = entry.hour
+        previous_energy = battery.initial_energy_kwh if index == 0 else soc[ordered[index - 1].hour]
+        prob += solar_used[hour] + grid[hour] + discharge[hour] - charge[hour] == entry.demand_kwh
+        prob += soc[hour] == previous_energy + charge[hour] - discharge[hour]
 
-    # Objective Function: Minimize total cost
-    prob += pulp.lpSum([grid[t] * hours[t].tariff_bdt_per_kwh for t in range(24)])
+    # The schedule is a daily cycle: the battery ends at its starting energy.
+    prob += soc[23] == battery.initial_energy_kwh
 
-    # Constraints
-    for t in range(24):
-        # Power Balance: Demand = Solar + Grid + Discharge - Charge
-        prob += (solar_used[t] + grid[t] + discharge[t] - charge[t] == hours[t].demand_kwh)
+    result = prob.solve(pulp.PULP_CBC_CMD(msg=False))
+    if pulp.LpStatus[result] != "Optimal":
+        raise RuntimeError(f"No feasible energy schedule found ({pulp.LpStatus[result]}).")
 
-        # Battery State of Charge Continuity
-        prev_soc = battery.initial_energy_kwh if t == 0 else soc[t - 1]
-        prob += (soc[t] == prev_soc + charge[t] - discharge[t])
-
-    # Solve LP
-    prob.solve(pulp.PULP_CBC_CMD(msg=False))
-
-    # Format Results
     hourly_plan: List[HourlyPlanEntry] = []
-    for t in range(24):
-        c_val = charge[t].varValue or 0.0
-        d_val = discharge[t].varValue or 0.0
-
-        if c_val > 0.001:
-            action = "charge"
-            b_kwh = round(c_val, 2)
-        elif d_val > 0.001:
-            action = "discharge"
-            b_kwh = round(d_val, 2)
+    for entry in ordered:
+        hour = entry.hour
+        charge_value = charge[hour].value() or 0.0
+        discharge_value = discharge[hour].value() or 0.0
+        if charge_value > 0.001:
+            action, battery_value = "charge", charge_value
+        elif discharge_value > 0.001:
+            action, battery_value = "discharge", discharge_value
         else:
-            action = "idle"
-            b_kwh = 0.0
-
+            action, battery_value = "idle", 0.0
         hourly_plan.append(
             HourlyPlanEntry(
-                hour=t,
-                grid_kwh=round(grid[t].varValue or 0.0, 2),
-                solar_used_kwh=round(solar_used[t].varValue or 0.0, 2),
+                hour=hour,
+                grid_kwh=round(grid[hour].value() or 0.0, 2),
+                solar_used_kwh=round(solar_used[hour].value() or 0.0, 2),
                 battery_action=action,
-                battery_kwh=b_kwh,
-                battery_energy_after_kwh=round(soc[t].varValue or 0.0, 2)
+                battery_kwh=round(battery_value, 2),
+                battery_energy_after_kwh=round(soc[hour].value() or 0.0, 2),
             )
         )
 
-    total_grid = round(sum(p.grid_kwh for p in hourly_plan), 2)
-    total_cost = round(sum(p.grid_kwh * hours[i].tariff_bdt_per_kwh for i, p in enumerate(hourly_plan)), 2)
-    peak_grid = round(max(p.grid_kwh for p in hourly_plan), 2)
-
+    total_grid = round(sum(item.grid_kwh for item in hourly_plan), 2)
+    total_cost = round(
+        sum(item.grid_kwh * entry.tariff_bdt_per_kwh for item, entry in zip(hourly_plan, ordered)),
+        2,
+    )
+    peak_grid = round(max(item.grid_kwh for item in hourly_plan), 2)
     return hourly_plan, total_grid, total_cost, peak_grid

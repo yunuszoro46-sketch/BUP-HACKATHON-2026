@@ -9,17 +9,18 @@ from fastapi.responses import FileResponse
 from app.guardrails import apply_guardrails
 from app.llm import interpret_operator_notes
 from app.optimizer import solve_energy_optimization
+from app.replay import replay_plan
 from app.schemas import OptimizeEnergyRequest, OptimizeEnergyResponse
 
 load_dotenv()
 
 app = FastAPI(title="GridWise Optimization API", version="1.0.0")
 
-# The dashboard is served by this API in production. CORS also makes local
-# development from another frontend origin straightforward.
 allowed_origins = [
     origin.strip()
-    for origin in os.getenv("CORS_ORIGINS", "http://localhost:8000,http://127.0.0.1:8000").split(",")
+    for origin in os.getenv(
+        "CORS_ORIGINS", "http://localhost:8000,http://127.0.0.1:8000"
+    ).split(",")
     if origin.strip()
 ]
 app.add_middleware(
@@ -52,6 +53,16 @@ async def optimize_energy(payload: OptimizeEnergyRequest):
             directives=optimizer_directives,
         )
 
+        # Never return a plan unless it satisfies the same constraints that were
+        # applied to the optimizer. This protects both judges and the UI from a
+        # solver/model regression.
+        replay_plan(
+            hours=payload.hours,
+            battery=payload.battery,
+            optimizer_directives=optimizer_directives,
+            plan=hourly_plan,
+        )
+
         return OptimizeEnergyResponse(
             scenario_id=payload.scenario_id,
             directive_interpretation=validated_interpretations,
@@ -59,10 +70,9 @@ async def optimize_energy(payload: OptimizeEnergyRequest):
             total_grid_kwh=total_grid,
             total_cost_bdt=total_cost,
             peak_grid_kwh=peak_grid,
-            plan_summary=f"Optimized schedule successfully with {len(optimizer_directives)} active directive(s).",
+            plan_summary=f"Optimized and replay-validated schedule with {len(optimizer_directives)} active directive(s).",
         )
     except Exception as exc:
-        # Keep the API response controlled; do not expose a traceback or secret.
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Optimization execution error: {exc}",
